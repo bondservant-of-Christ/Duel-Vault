@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Duel Vault</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+:root{--bg:#f6f4ee;--card:#fff;--tx:#1d1b16;--mu:#6d685c;--ac:#6b3fd4;--bd:#e2ddd0;--er:#c23a2b}
+@media (prefers-color-scheme:dark){:root{--bg:#15131b;--card:#201d2a;--tx:#f1eee8;--mu:#a29cb3;--ac:#a98bff;--bd:#383449}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom))}
+h1{font-size:22px;margin:4px 0 2px}.muted{color:var(--mu);font-size:14px}
+button{font:inherit;border:0;border-radius:12px;padding:12px 16px;background:var(--ac);color:#fff;font-weight:600}
+button.g{background:transparent;color:var(--tx);border:1px solid var(--bd)}button:disabled{opacity:.5}
+#scan{width:100%;padding:18px;font-size:18px}
+.box{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin:12px 0}
+.row{display:flex;gap:8px;align-items:center}.grow{flex:1;min-width:0}
+img#pv{width:100%;max-height:200px;object-fit:contain;border-radius:10px;margin-bottom:8px}
+input,select{font:inherit;width:100%;padding:10px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--tx)}
+.item{display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--bd)}.item:first-child{border-top:0}
+.qty{display:flex;align-items:center;gap:6px}.qty button{padding:4px 11px}
+.nm{font-weight:600;overflow-wrap:anywhere}.err{color:var(--er)}#msg{min-height:20px;font-size:14px;margin-top:8px}
+.res{display:block;width:100%;text-align:left;background:transparent;color:var(--tx);border:1px solid var(--bd);margin-top:6px;font-weight:500;padding:10px}
+.res.sel{border-color:var(--ac);outline:2px solid var(--ac)}
+</style></head><body><main>
+<h1>Duel Vault</h1><p class="muted">Scan or search a Yu-Gi-Oh! card and add it to your master list.</p>
+
+<input id="file" type="file" accept="image/*" capture="environment" hidden>
+<button id="scan">📷 Scan a card</button>
+<div id="msg" class="muted">Tip: fill the frame with the card, flat, no glare.</div>
+
+<div class="box">
+ <img id="pv" alt="" hidden>
+ <label class="muted">Search by name (or fix what the scan read)</label>
+ <input id="name" placeholder="e.g. Blue-Eyes White Dragon" autocomplete="off">
+ <div id="results"></div>
+ <div id="pick" hidden>
+  <label class="muted" style="display:block;margin-top:10px">Printing</label><select id="rSet"></select>
+  <button id="add" style="width:100%;margin-top:12px">Add to list</button>
+ </div>
+</div>
+
+<div class="box"><div class="row"><strong class="grow" id="count"></strong><button class="g" id="csv">Export</button><button class="g" id="clr">Clear</button></div>
+<input id="q" placeholder="Search your list…" style="margin:10px 0 4px"><div id="list"></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const ls={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+let cards=ls.get("dv-cards",[]),found=[],chosen=null,worker=null,timer=null;
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const say=(t,e)=>{$("msg").textContent=t;$("msg").className=e?"err":"muted"};
+
+function render(){
+ const q=$("q").value.toLowerCase();
+ $("count").textContent=`${cards.length} unique · ${cards.reduce((a,c)=>a+c.qty,0)} total`;
+ const rows=cards.map((c,i)=>({c,i})).filter(({c})=>!q||(c.name+c.code).toLowerCase().includes(q));
+ $("list").innerHTML=rows.length?rows.map(({c,i})=>`<div class="item"><div class="grow"><div class="nm">${esc(c.name)}</div><div class="muted">${esc(c.code||"no set")}${c.rarity?" · "+esc(c.rarity):""}</div></div><div class="qty"><button class="g" data-a="d" data-i="${i}">−</button><b>${c.qty}</b><button class="g" data-a="u" data-i="${i}">+</button></div></div>`).join(""):'<p class="muted">Nothing yet. Scan or search your first card!</p>';
+}
+$("list").onclick=e=>{const b=e.target.closest("button");if(!b)return;const i=+b.dataset.i;
+ if(b.dataset.a==="u")cards[i].qty++;else if(--cards[i].qty<1)cards.splice(i,1);ls.set("dv-cards",cards);render()};
+$("q").oninput=render;
+
+async function ygo(term){
+ try{const r=await fetch("https://db.ygoprodeck.com/api/v7/cardinfo.php?fname="+encodeURIComponent(term));
+  return r.ok?(await r.json()).data||[]:[]}catch(e){return null}}
+async function search(term){
+ term=term.trim();chosen=null;$("pick").hidden=true;
+ if(term.length<3){$("results").innerHTML="";return}
+ let d=await ygo(term);
+ if(d===null){say("Can't reach the card database – check your connection.",true);return}
+ $("results").innerHTML=d.slice(0,8).map((c,i)=>`<button class="res" data-i="${i}">${esc(c.name)}</button>`).join("")||'<p class="muted">No matches.</p>';
+ found=d.slice(0,8);
+ if(d.length===1)choose(0);
+}
+function choose(i){
+ chosen=found[i];
+ document.querySelectorAll(".res").forEach((b,j)=>b.classList.toggle("sel",j===i));
+ const s=chosen.card_sets||[];
+ $("rSet").innerHTML=s.map((x,k)=>`<option value="${k}">${esc(x.set_code)} · ${esc(x.set_rarity)}</option>`).join("")+'<option value="x">Unknown / not listed</option>';
+ $("rSet").value=s.length?"0":"x";$("pick").hidden=false;
+ if(chosen._code){const m=s.findIndex(x=>x.set_code.toUpperCase()===chosen._code);if(m>=0)$("rSet").value=m}
+}
+$("results").onclick=e=>{const b=e.target.closest(".res");if(b)choose(+b.dataset.i)};
+$("name").oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>search($("name").value),350)};
+
+$("add").onclick=()=>{
+ if(!chosen)return;const s=(chosen.card_sets||[])[$("rSet").value]||{set_code:"",set_rarity:""};
+ const code=s.set_code,rarity=s.set_rarity,name=chosen.name;
+ const ex=cards.find(c=>c.name===name&&c.code===code&&c.rarity===rarity);
+ ex?ex.qty++:cards.unshift({name,code,rarity,qty:1});
+ ls.set("dv-cards",cards);render();say("Added "+name+".");
+ $("name").value="";$("results").innerHTML="";$("pick").hidden=true;$("pv").hidden=true;chosen=null};
+
+// ---- scanning (free, on-device OCR) ----
+function toCanvas(file){return new Promise((res,rej)=>{const im=new Image();im.onload=()=>{const s=Math.min(1,1600/Math.max(im.width,im.height));
+ const c=document.createElement("canvas");c.width=im.width*s;c.height=im.height*s;const x=c.getContext("2d");x.filter="grayscale(1) contrast(1.3)";x.drawImage(im,0,0,c.width,c.height);res(c)};im.onerror=rej;im.src=URL.createObjectURL(file)})}
+$("scan").onclick=()=>$("file").click();
+$("file").onchange=async()=>{
+ const f=$("file").files[0];$("file").value="";if(!f)return;
+ $("scan").disabled=true;
+ try{
+  const cv=await toCanvas(f);$("pv").src=cv.toDataURL("image/jpeg",.6);$("pv").hidden=false;
+  if(!window.Tesseract)throw new Error("Text reader couldn't load – check your connection.");
+  if(!worker){say("Loading text reader (first time only)…");worker=await Tesseract.createWorker("eng")}
+  say("Reading card…");
+  const {data}=await worker.recognize(cv);
+  const H=cv.height,txt=data.text||"";
+  const lines=(data.lines||[]).map(l=>({t:l.text.replace(/[^A-Za-z0-9 ,'\-:.&!]/g," ").replace(/\s+/g," ").trim(),y:l.bbox.y0,c:l.confidence}))
+   .filter(l=>(l.t.match(/[A-Za-z]/g)||[]).length>=3&&l.c>45).sort((a,b)=>a.y-b.y);
+  const top=lines.filter(l=>l.y<H*.3);
+  const cands=[...top,...lines.filter(l=>!top.includes(l)).sort((a,b)=>b.t.length-a.t.length)].slice(0,3).map(l=>l.t);
+  const code=((txt.match(/\b[A-Z0-9]{2,5}-[A-Z]{1,2}\d{3}\b/)||[])[0]||"").toUpperCase();
+  let hit=null,term="";
+  outer:for(const c of cands){
+   const tries=[c,...c.split(" ").filter(w=>w.length>=4).sort((a,b)=>b.length-a.length).slice(0,2)];
+   for(const t of tries){const d=await ygo(t);if(d&&d.length){hit=d;term=c;break outer}}}
+  if(hit){$("name").value=term;found=hit.slice(0,8);if(code)found.forEach(c=>c._code=code);
+   $("results").innerHTML=found.map((c,i)=>`<button class="res" data-i="${i}">${esc(c.name)}</button>`).join("");
+   if(found.length===1)choose(0);say("Tap the right card, then pick the printing (rarity is on your card).")}
+  else{$("name").value=cands[0]||"";say("Couldn't match that. Edit the name above or retake the photo.",true)}
+ }catch(e){say(e.message||"Scan failed. Try better light.",true)}
+ $("scan").disabled=false};
+
+// ---- export ----
+$("clr").onclick=()=>{if(cards.length&&confirm("Remove every card?")){cards=[];ls.set("dv-cards",cards);render()}};
+$("csv").onclick=async()=>{
+ if(!cards.length)return;const q=s=>'"'+String(s).replace(/"/g,'""')+'"';
+ const d=["Name,Set Code,Rarity,Quantity",...cards.map(c=>[q(c.name),q(c.code),q(c.rarity),c.qty].join(","))].join("\n");
+ const file=new File([d],"yugioh-master-list.csv",{type:"text/csv"});
+ try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file]});return}}catch(e){if(e.name==="AbortError")return}
+ try{await navigator.clipboard.writeText(d);say("List copied as CSV – paste it into a notes app or spreadsheet.");return}catch(e){}
+ const a=document.createElement("a");a.href=URL.createObjectURL(file);a.download=file.name;a.click()};
+render();
+</script></body></html>

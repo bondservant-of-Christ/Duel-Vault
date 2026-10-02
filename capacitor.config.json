@@ -1,0 +1,6 @@
+{
+  "appId": "com.duelvault.app",
+  "appName": "Duel Vault",
+  "webDir": "www",
+  "server": { "androidScheme": "https" }
+}
